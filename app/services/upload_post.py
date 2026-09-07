@@ -1,5 +1,5 @@
 """
-Upload-Post API integration for cross-posting videos to TikTok and Instagram.
+Upload-Post API integration for cross-posting videos to TikTok, Instagram and YouTube Shorts.
 
 Docs: https://docs.upload-post.com
 """
@@ -12,21 +12,33 @@ from app.config import config
 
 
 class UploadPostService:
-    """
-    Service for cross-posting videos to TikTok/Instagram via Upload-Post API.
-    """
-
     API_BASE = "https://api.upload-post.com"
 
-    def __init__(self):
-        self.api_key = config.app.get("upload_post_api_key", "")
-        self.username = config.app.get("upload_post_username", "")
-        self.enabled = config.app.get("upload_post_enabled", False)
-        self.platforms = config.app.get("upload_post_platforms", ["tiktok", "instagram"])
-        self.auto_upload = config.app.get("upload_post_auto_upload", False)
+    @property
+    def api_key(self) -> str:
+        return config.app.get("upload_post_api_key", "")
+
+    @property
+    def username(self) -> str:
+        return config.app.get("upload_post_username", "")
+
+    @property
+    def enabled(self) -> bool:
+        return config.app.get("upload_post_enabled", False)
+
+    @property
+    def platforms(self) -> list:
+        return config.app.get("upload_post_platforms", ["tiktok", "instagram"])
+
+    @property
+    def auto_upload(self) -> bool:
+        return config.app.get("upload_post_auto_upload", False)
+
+    @property
+    def youtube_privacy_status(self) -> str:
+        return config.app.get("upload_post_youtube_privacy_status", "public")
 
     def is_configured(self) -> bool:
-        """Check if Upload-Post is properly configured."""
         return bool(self.api_key and self.username and self.enabled)
 
     def upload_video(
@@ -34,20 +46,9 @@ class UploadPostService:
         video_path: str,
         title: str,
         platforms: Optional[list] = None,
-        privacy_level: str = "PUBLIC_TO_EVERYONE"
+        privacy_level: str = "PUBLIC_TO_EVERYONE",
+        youtube_extra: Optional[dict] = None,
     ) -> dict:
-        """
-        Upload a video to TikTok and/or Instagram.
-
-        Args:
-            video_path (str): Path to the video file
-            title (str): Video title/caption (max 2200 chars for Instagram)
-            platforms (list): List of platforms ["tiktok", "instagram"]
-            privacy_level (str): Privacy level for the video
-
-        Returns:
-            dict: API response with request_id and status
-        """
         if not self.is_configured():
             logger.warning("Upload-Post is not configured. Skipping cross-post.")
             return {"success": False, "error": "Upload-Post not configured"}
@@ -64,29 +65,36 @@ class UploadPostService:
         try:
             with open(video_path, 'rb') as video_file:
                 files = {'video': video_file}
-                
-                data = {
-                    'user': self.username,
-                    'title': title[:2200],
-                    'privacy_level': privacy_level
-                }
-                
-                # Add each platform
-                for i, platform in enumerate(platforms):
-                    data[f'platform[{i}]'] = platform
 
-                headers = {
-                    'Authorization': f'Apikey {self.api_key}'
-                }
+                data = [
+                    ('user', self.username),
+                    ('title', title[:2200]),
+                    ('privacy_level', privacy_level),
+                ]
+
+                for platform in platforms:
+                    data.append(('platform[]', platform))
+
+                if youtube_extra and any(p.startswith("youtube") for p in platforms):
+                    if "youtube_title" in youtube_extra:
+                        data.append(('youtube_title', youtube_extra["youtube_title"][:100]))
+                    if "youtube_description" in youtube_extra:
+                        data.append(('youtube_description', youtube_extra["youtube_description"]))
+                    for tag in youtube_extra.get("tags", []):
+                        data.append(('tags[]', tag))
+                    data.append(('privacyStatus', youtube_extra.get("privacyStatus", "public")))
+                    data.append(('containsSyntheticMedia', "true"))
+
+                headers = {'Authorization': f'Apikey {self.api_key}'}
 
                 response = requests.post(
-                    f"{self.API_BASE}/api/upload_video",
+                    f"{self.API_BASE}/api/upload",
                     headers=headers,
                     data=data,
                     files=files,
-                    timeout=300
+                    timeout=300,
                 )
-                
+
                 response.raise_for_status()
                 result = response.json()
 
@@ -94,7 +102,7 @@ class UploadPostService:
                     logger.info(f"✅ Video cross-posted successfully! Request ID: {result.get('request_id')}")
                 else:
                     logger.warning(f"Cross-post failed: {result.get('message', 'Unknown error')}")
-                
+
                 return result
 
         except requests.exceptions.RequestException as e:
@@ -117,11 +125,12 @@ class UploadPostService:
             }
 
             response = requests.get(
-                f"{self.API_BASE}/api/status/{request_id}",
+                f"{self.API_BASE}/api/uploadposts/status",
+                params={'request_id': request_id},
                 headers=headers,
                 timeout=30
             )
-            
+
             response.raise_for_status()
             return response.json()
 
@@ -134,16 +143,10 @@ class UploadPostService:
 upload_post_service = UploadPostService()
 
 
-def cross_post_video(video_path: str, title: str, platforms: Optional[list] = None) -> dict:
-    """
-    Convenience function to cross-post a video.
-    
-    Args:
-        video_path (str): Path to the video file
-        title (str): Video title/caption
-        platforms (list): List of platforms (defaults to config)
-    
-    Returns:
-        dict: API response
-    """
-    return upload_post_service.upload_video(video_path, title, platforms)
+def cross_post_video(
+    video_path: str,
+    title: str,
+    platforms: Optional[list] = None,
+    youtube_extra: Optional[dict] = None,
+) -> dict:
+    return upload_post_service.upload_video(video_path, title, platforms, youtube_extra=youtube_extra)
